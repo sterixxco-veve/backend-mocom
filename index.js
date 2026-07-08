@@ -2943,6 +2943,89 @@ app.get("/api/replacements/:id", async (req, res) => {
 
 });
 
+app.get("/api/replacements/user/:user_id", async (req, res) => {
+
+    const { user_id } = req.params;
+
+    try {
+
+        const [results] = await db.query(
+
+            `
+            SELECT
+
+                r.id,
+                r.assignment_id,
+
+                r.reason,
+
+                r.status,
+
+                r.created_at,
+
+                requester.full_name AS requester_name,
+
+                replacement.full_name AS replacement_name,
+
+                approver.full_name AS approved_by_name,
+
+                s.title,
+                s.location,
+
+                DATE_FORMAT(
+                    s.start_time,
+                    '%Y-%m-%d %H:%i'
+                ) AS start_time,
+
+                DATE_FORMAT(
+                    s.end_time,
+                    '%Y-%m-%d %H:%i'
+                ) AS end_time
+
+            FROM replacements r
+
+            JOIN assignments a
+                ON a.id = r.assignment_id
+
+            JOIN schedules s
+                ON s.id = a.schedule_id
+
+            JOIN users requester
+                ON requester.id = r.requested_by
+
+            LEFT JOIN users replacement
+                ON replacement.id = r.replacement_user_id
+
+            LEFT JOIN users approver
+                ON approver.id = r.approved_by
+
+            WHERE r.requested_by = ?
+
+            ORDER BY r.created_at DESC
+            `,
+
+            [user_id]
+
+        );
+
+        return res.json(results);
+
+    } catch (err) {
+
+        console.log(err);
+
+        return res.status(500).json({
+
+            success: false,
+
+            error: err.message
+
+        });
+
+    }
+
+});
+
 app.get("/test", (req, res) => {
   console.log("masuk test");
   res.send("OK");
