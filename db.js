@@ -1,25 +1,30 @@
 const mysql = require("mysql2/promise");
 
-const dbConfig = {
-  host: "localhost",
-  user: "root",
-  password: "",
-};
+// Vercel akan membaca DATABASE_URL dari Environment Variables yang kamu isi nanti
+const dbUri = process.env.DATABASE_URL;
 
-let db;
+let pool;
 
 const initDb = async () => {
-  db = await mysql.createConnection(dbConfig);
+  // Menggunakan createPool jauh lebih aman untuk serverless (Vercel)
+  pool = mysql.createPool({
+    uri: dbUri,
+    waitForConnections: true,
+    connectionLimit: 10, // Membatasi agar koneksi ke Aiven tidak overload
+    queueLimit: 0
+  });
 
-  console.log("Terhubung ke MySQL.");
+  console.log("Koneksi database (Pool) berhasil diinisialisasi.");
 
-  await db.query("CREATE DATABASE IF NOT EXISTS proyek_mocom");
-  await db.query("USE proyek_mocom");
+  // Karena di Aiven nama database sudah ditentukan saat kamu buat pertama kali,
+  // baris CREATE DATABASE & USE sebaiknya dihapus agar tidak error di cloud.
+  // Pastikan nama database di Aiven disamakan (misal: proyek_mocom).
 
-  return db;
+  return pool;
 };
 
 module.exports = {
   initDb,
-  getDb: () => db
+  // Kembalikan pool agar bisa dipakai query di file lain
+  getDb: () => pool 
 };
