@@ -386,10 +386,17 @@ app.post("/api/login", async (req, res) => {
 
     const user = results[0];
 
-    const isMatch = await bcrypt.compare(
-        password,
-        user.password
-    );
+    let dbPassword = user.password;
+    if (dbPassword && dbPassword.startsWith("$2y$")) {
+      dbPassword = dbPassword.replace(/^\$2y\$/, "$2b$");
+    }
+
+    let isMatch = false;
+    if (dbPassword && (dbPassword.startsWith("$2a$") || dbPassword.startsWith("$2b$"))) {
+      isMatch = await bcrypt.compare(password, dbPassword);
+    } else {
+      isMatch = (password === dbPassword);
+    }
 
     if (!isMatch) {
         return res.status(401).json({
@@ -436,10 +443,17 @@ app.post("/api/loginCompany", async (req, res) => {
         console.log("Password input :", password);
         console.log("Password DB    :", company.password);
 
-        const isMatch = await bcrypt.compare(
-            password,
-            company.password
-        );
+        let dbPassword = company.password;
+        if (dbPassword && dbPassword.startsWith("$2y$")) {
+          dbPassword = dbPassword.replace(/^\$2y\$/, "$2b$");
+        }
+
+        let isMatch = false;
+        if (dbPassword && (dbPassword.startsWith("$2a$") || dbPassword.startsWith("$2b$"))) {
+          isMatch = await bcrypt.compare(password, dbPassword);
+        } else {
+          isMatch = (password === dbPassword);
+        }
 
         if (!isMatch) {
             return res.status(401).json({
