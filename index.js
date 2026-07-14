@@ -2536,7 +2536,7 @@ app.get("/api/getTodayAssignmentsByUserId/:user_id", async (req, res) => {
 });
 
 /* ========================================================
-   REAL-TIME NFC ATTENDANCE TAP (PURE SHIFT-BASED)
+   REAL-TIME NFC ATTENDANCE TAP (PURE SHIFT-BASED) - REVISED
 ======================================================== */
 app.post("/api/checkInNfc", async (req, res) => {
   const logTimestamp = new Date().toLocaleString("id-ID");
@@ -2571,19 +2571,20 @@ app.post("/api/checkInNfc", async (req, res) => {
 
     const userId = nfcRows[0].user_id;
 
-    // 2. CARI SHIFT AKTIF: Cari assignment milik user yang jamnya COCOK dengan waktu SEKARANG
-    // Toleransi: 2 Jam sebelum shift dimulai (buat check-in awal) hingga 2 jam setelah shift selesai (buat check-out telat)
+    // 2. CARI SHIFT AKTIF: Menggunakan waktu dari Node.js agar aman dari bentrok timezone database
+    const currentServerTime = new Date();
+
     const [assignmentRows] = await db.query(
       `SELECT ag.id as assignment_id, s.title, s.start_time, s.end_time 
        FROM assignments ag
        INNER JOIN schedules s ON ag.schedule_id = s.id
        WHERE ag.user_id = ? 
          AND ag.status IN ('pending', 'accepted')
-         AND NOW() >= DATE_SUB(s.start_time, INTERVAL 2 HOUR)
-         AND NOW() <= DATE_ADD(s.end_time, INTERVAL 2 HOUR)
+         AND ? >= DATE_SUB(s.start_time, INTERVAL 2 HOUR)
+         AND ? <= DATE_ADD(s.end_time, INTERVAL 2 HOUR)
        ORDER BY s.start_time ASC 
        LIMIT 1`,
-      [userId],
+      [userId, currentServerTime, currentServerTime],
     );
 
     if (assignmentRows.length === 0) {
@@ -2600,7 +2601,7 @@ app.post("/api/checkInNfc", async (req, res) => {
     const assignment = assignmentRows[0];
     const assignmentId = assignment.assignment_id;
 
-    // 3. PERBAIKAN SHIFT: Cari absensi spesifik hanya berdasarkan assignment_id (Tanpa batasan tanggal CURDATE)
+    // 3. PERBAIKAN SHIFT: Cari absensi spesifik hanya berdasarkan assignment_id
     const [attendanceRows] = await db.query(
       "SELECT id, check_in, check_out FROM attendances WHERE assignment_id = ?",
       [assignmentId],
