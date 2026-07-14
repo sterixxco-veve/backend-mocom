@@ -2435,67 +2435,54 @@ app.put("/api/checkOut/:attendance_id", async (req, res) => {
 ========================= */
 
 // ENDPOINT: Menghubungkan atau Mengupdate ID NFC ke User tertentu
+// ENDPOINT: Menghubungkan atau Mengupdate ID NFC ke User tertentu
 app.post("/api/assignNfc", async (req, res) => {
   const timestamp = new Date().toLocaleString("id-ID");
   const { user_id, nfc_uid } = req.body;
 
   console.log(`\n[${timestamp}] 💳 NFC REQUEST: Assign NFC ID [${nfc_uid}] ke User ID #${user_id}`);
 
-  // 1. Validasi Input mendasar
   if (!user_id || !nfc_uid) {
-    return res.status(400).json({ 
-      success: false, 
-      message: "User ID dan NFC UID wajib diisi!" 
-    });
+    return res
+      .status(400)
+      .json({ success: false, message: "User ID dan NFC UID wajib diisi!" });
   }
 
   try {
-    // 2. Gunakan query bertahap (Lebih aman dari Error 500 daripada ON DUPLICATE KEY yang rawan konflik struktur)
-    // Cek apakah user sudah punya kartu NFC sebelumnya
-    const [existingUserCard] = await db.query(
-      "SELECT id FROM nfc_cards WHERE user_id = ? LIMIT 1",
-      [user_id]
-    );
+    // PENTING: Pastikan kolom 'updated_at' benar-benar ada di tabelmu.
+    // Jika tidak ada kolom 'updated_at', HAPUS bagian ", updated_at = NOW()" di bawah ini.
+    const querySql = `
+      INSERT INTO nfc_cards (user_id, nfc_uid, is_active) 
+      VALUES (?, ?, 1)
+      ON DUPLICATE KEY UPDATE nfc_uid = ?, is_active = 1
+    `;
 
-    if (existingUserCard && existingUserCard.length > 0) {
-      // JALUR UPDATE: Jika user sudah punya NFC, update ke UID yang baru
-      await db.query(
-        "UPDATE nfc_cards SET nfc_uid = ?, is_active = 1 WHERE user_id = ?",
-        [nfc_uid, user_id]
-      );
-      console.log(`[${timestamp}] ✅ Sukses UPDATE NFC UID [${nfc_uid}] untuk User ID #${user_id}`);
-    } else {
-      // JALUR INSERT: Jika user belum punya NFC sama sekali
-      await db.query(
-        "INSERT INTO nfc_cards (user_id, nfc_uid, is_active) VALUES (?, ?, 1)",
-        [user_id, nfc_uid]
-      );
-      console.log(`[${timestamp}] ✅ Sukses INSERT NFC UID [${nfc_uid}] baru ke User ID #${user_id}`);
-    }
+    // Menggunakan destrukturisasi [result] agar kompatibel dengan library mysql2/promise
+    const [result] = await db.query(querySql, [user_id, nfc_uid, nfc_uid]);
 
+    console.log(`[${timestamp}] ✅ Sukses override/assign NFC UID [${nfc_uid}] ke User ID #${user_id}`);
+    
     return res.json({
       success: true,
-      message: "ID NFC berhasil dikonfigurasi pada profil user.",
+      message: "ID NFC berhasil dikonfigurasi pada profil user (Kartu baru telah aktif).",
       user_id: user_id,
       nfc_uid: nfc_uid,
     });
-
   } catch (err) {
-    // DISINI TEMPAT ERROR 500 DILEMPAR
     console.error(`[${timestamp}] ❌ Database Error pada assignNfc:`, err.message);
 
-    // Handle jika nfc_uid ternyata sudah dipakai orang lain
+    // Menangani error jika nfc_uid sudah dipakai oleh USER LAIN
     if (err.code === "ER_DUP_ENTRY" || err.message.includes("Duplicate entry")) {
       return res.status(409).json({
         success: false,
-        error: "Kartu atau ID NFC ini sudah terdaftar milik pengguna lain!",
+        error: "Kartu atau ID NFC ini sudah terdaftar aktif milik pengguna lain!",
       });
     }
 
-    // Response Error 500 beserta detail aslinya dari MySQL
+    // Mengembalikan detail error asli ke postman/frontend untuk debug
     return res.status(500).json({
       success: false,
-      error: "Gagal menyimpan data NFC (Server Error): " + err.message,
+      error: "Gagal menyimpan data NFC: " + err.message,
     });
   }
 });
