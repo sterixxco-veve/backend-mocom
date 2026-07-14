@@ -2200,133 +2200,144 @@ app.get("/api/getAttendancesByUserId/:user_id", async (req, res) => {
   }
 });
 
-//staff check in
-app.post("/api/checkIn", async (req, res) => {
+/* ========================================================
+   REAL-TIME NFC ATTENDANCE TAP (PURE SHIFT-BASED) - FINAL REVISED
+======================================================== */
+app.post("/api/checkInNfc", async (req, res) => {
   const logTimestamp = new Date().toLocaleString("id-ID");
+  const { nfc_uid } = req.body;
+
+  console.log(
+    `\n[${logTimestamp}] ⚡ NFC SHIFT ATTENDANCE TAP | UID: ${nfc_uid}`,
+  );
+
+  if (!nfc_uid) {
+    return res
+      .status(400)
+      .json({ success: false, message: "NFC UID wajib dikirim!" });
+  }
 
   try {
-    const { assignment_id } = req.body;
-
-    console.log(
-      `\n[${logTimestamp}] 📍 CHECK IN REQUEST | Assignment ID: ${assignment_id}`,
+    // 1. Cari siapa pemilik nfc_uid aktif ini
+    const [nfcRows] = await db.query(
+      "SELECT user_id FROM nfc_cards WHERE nfc_uid = ? AND is_active = 1",
+      [nfc_uid],
     );
 
-    // Validasi input
-    if (!assignment_id) {
-      return res.status(400).json({
-        error: "assignment_id wajib diisi",
+    if (nfcRows.length === 0) {
+      console.log(
+        `[${logTimestamp}] ⚠️ Tap ditolak: Kartu NFC belum terdaftar.`,
+      );
+      return res.status(404).json({
+        success: false,
+        message: "Kartu NFC tidak dikenali/belum terdaftar!",
       });
     }
 
-    // Cek assignment ada atau tidak
+    const userId = nfcRows[0].user_id;
+
+    // 2. CARI SHIFT AKTIF: Format waktu Node.js ke string lokal YYYY-MM-DD HH:MM:SS
+    // Ini menjamin perbandingan apple-to-apple dengan kolom DATETIME di MySQL kamu
+    const now = new Date();
+    const currentServerTime = now.getFullYear() + '-' +
+      String(now.getMonth() + 1).padStart(2, '0') + '-' +
+      String(now.getDate()).padStart(2, '0') + ' ' +
+      String(now.getHours()).padStart(2, '0') + ':' +
+      String(now.getMinutes()).padStart(2, '0') + ':' +
+      String(now.getSeconds()).padStart(2, '0');
+
+    console.log(`[${logTimestamp}] 🕒 Mencari shift untuk User ID #${userId} pada waktu lokal: ${currentServerTime}`);
+
     const [assignmentRows] = await db.query(
-      `
-              SELECT
-                  ag.id,
-                  ag.user_id,
-                  ag.schedule_id,
-                  s.title,
-                  s.start_time,
-                  s.end_time
-              FROM assignments ag
-              INNER JOIN schedules s
-                  ON ag.schedule_id = s.id
-              WHERE ag.id = ?
-              `,
-      [assignment_id],
+      `SELECT ag.id as assignment_id, s.title, s.start_time, s.end_time 
+       FROM assignments ag
+       INNER JOIN schedules s ON ag.schedule_id = s.id
+       WHERE ag.user_id = ? 
+         AND ag.status IN ('pending', 'accepted')
+         AND ? >= DATE_SUB(s.start_time, INTERVAL 2 HOUR)
+         AND ? <= DATE_ADD(s.end_time, INTERVAL 2 HOUR)
+       ORDER BY s.start_time ASC 
+       LIMIT 1`,
+      [userId, currentServerTime, currentServerTime],
     );
 
     if (assignmentRows.length === 0) {
+      console.log(
+        `[${logTimestamp}] ⚠️ Tap ditolak: User ID #${userId} tidak ada jadwal shift yang cocok dengan waktu sekarang.`,
+      );
       return res.status(404).json({
-        error: "Assignment tidak ditemukan",
+        success: false,
+        message:
+          "Ditolak: Anda tidak memiliki jadwal shift aktif pada jam sekarang!",
       });
     }
 
     const assignment = assignmentRows[0];
+    const assignmentId = assignment.assignment_id;
 
-    // Cek apakah sudah check in hari ini
-    const [existingAttendance] = await db.query(
-      `
-              SELECT *
-              FROM attendances
-              WHERE assignment_id = ?
-              AND DATE(check_in) = CURDATE()
-              `,
-      [assignment_id],
+    // 3. PERBAIKAN SHIFT: Cari absensi spesifik hanya berdasarkan assignment_id
+    const [attendanceRows] = await db.query(
+      "SELECT id, check_in, check_out FROM attendances WHERE assignment_id = ?",
+      [assignmentId],
     );
 
-    if (existingAttendance.length > 0) {
-      return res.status(409).json({
-        error: "Staff sudah melakukan check in hari ini",
+    if (attendanceRows.length === 0) {
+      // ------------------------------------------
+      // JALUR A: Belum ada record untuk SHIFT INI -> Lakukan Check-In
+      // ------------------------------------------
+      const scheduleStart = new Date(assignment.start_time);
+      const statusKehadiran = now > scheduleStart ? "late" : "present";
+
+      await db.query(
+        `INSERT INTO attendances (assignment_id, check_in, status, sync_status, created_at)
+         VALUES (?, NOW(), ?, 'synced', NOW())`,
+        [assignmentId, statusKehadiran],
+      );
+
+      console.log(
+        `[${logTimestamp}] ✅ NFC Check-In Shift [${assignment.title}] Sukses! Status: ${statusKehadiran}`,
+      );
+      return res.status(201).json({
+        success: true,
+        message: `Check-In Shift ${assignment.title} Berhasil! (${statusKehadiran === "late" ? "Terlambat" : "Tepat Waktu"})`,
+        action: "check_in",
+      });
+    } else {
+      // ------------------------------------------
+      // JALUR B: Sudah Check-In -> Lakukan Check-Out untuk SHIFT INI
+      // ------------------------------------------
+      const currentAttendance = attendanceRows[0];
+
+      if (currentAttendance.check_out !== null) {
+        console.log(
+          `[${logTimestamp}] ⚠️ Tap diabaikan: User ID #${userId} sudah menyelesaikan shift ini.`,
+        );
+        return res.status(409).json({
+          success: false,
+          message:
+            "Anda sudah menyelesaikan Check-In & Check-Out untuk shift ini!",
+        });
+      }
+
+      await db.query(
+        "UPDATE attendances SET check_out = NOW(), sync_status = 'synced' WHERE id = ?",
+        [currentAttendance.id],
+      );
+
+      console.log(
+        `[${logTimestamp}] ✅ NFC Check-Out Shift [${assignment.title}] Sukses!`,
+      );
+      return res.status(200).json({
+        success: true,
+        message: `Check-Out Shift ${assignment.title} Berhasil! Selamat beristirahat.`,
+        action: "check_out",
       });
     }
-
-    // Tentukan status
-    const now = new Date();
-    const scheduleStart = new Date(assignment.start_time);
-
-    let status = "present";
-
-    if (now > scheduleStart) {
-      status = "late";
-    }
-
-    // Simpan attendance
-    const [insertResult] = await db.query(
-      `
-              INSERT INTO attendances
-              (
-                  assignment_id,
-                  check_in,
-                  status,
-                  sync_status,
-                  created_at
-              )
-              VALUES
-              (
-                  ?,
-                  NOW(),
-                  ?,
-                  'synced',
-                  NOW()
-              )
-              `,
-      [assignment_id, status],
-    );
-
-    // Ambil data yang baru dibuat
-    const [attendanceRows] = await db.query(
-      `
-              SELECT
-                  id,
-                  assignment_id,
-                  DATE_FORMAT(check_in,'%Y-%m-%d %H:%i:%s') AS check_in,
-                  DATE_FORMAT(check_out,'%Y-%m-%d %H:%i:%s') AS check_out,
-                  status,
-                  sync_status,
-                  DATE_FORMAT(created_at,'%Y-%m-%d %H:%i:%s') AS created_at
-              FROM attendances
-              WHERE id = ?
-              `,
-      [insertResult.insertId],
-    );
-
-    console.log(
-      `[${logTimestamp}] ✅ Check In berhasil | Attendance ID: ${insertResult.insertId}`,
-    );
-
-    return res.status(201).json({
-      success: true,
-      message: "Check In berhasil",
-      attendance: attendanceRows[0],
-    });
   } catch (err) {
-    console.error(`[${logTimestamp}] ❌ Error Check In:`, err.message);
-
+    console.error(`[${logTimestamp}] ❌ database Error:`, err.message);
     return res.status(500).json({
       success: false,
-      error: "Gagal melakukan Check In",
-      details: err.message,
+      error: "Gagal memproses absen NFC: " + err.message,
     });
   }
 });
