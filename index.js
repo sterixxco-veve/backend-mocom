@@ -896,30 +896,63 @@ app.post("/api/insertSchedules", async (req, res) => {
   }
 });
 
-app.get("/api/getAllSchedules", async (req, res) => {
+// ==========================================
+// 🛠️ FUNGSI 1: Untuk memeriksa & memperbarui status yang kedaluwarsa
+// ==========================================
+async function autoDeclinePendingAssignments() {
+  try {
+    await db.query(`
+      UPDATE assignments 
+      SET status = 'declined' 
+      WHERE status = 'pending' AND assigned_at < NOW() - INTERVAL 1 DAY
+    `);
+    console.log("🕒 [System] Pembersihan otomatis jadwal pending > 1 hari sukses dijalankan.");
+  } catch (err) {
+    console.error("❌ [System] Gagal menjalankan pembersihan otomatis:", err.message);
+  }
+}
+
+// ==========================================
+// 🛠️ FUNGSI 2: Endpoint API yang memanggil Fungsi 1
+// ==========================================
+app.get("/api/getSchedulesByCompanyId/:company_id", async (req, res) => {
+  const { company_id } = req.params;
   const timestamp = new Date().toLocaleString("id-ID");
   const clientIp = req.headers["x-forwarded-for"] || req.socket.remoteAddress;
 
-  console.log(`\n[${timestamp}] 📥 GET Request masuk ke /api/getAllSchedules`);
-  console.log(`[${timestamp}] 🖥️  Dipanggil oleh IP: ${clientIp}`);
+  console.log(`\n[${timestamp}] 📥 GET Request masuk ke /api/getSchedulesByCompanyId/${company_id}`);
 
+  // 1. Panggil Fungsi 1 untuk membersihkan status di DB
+  await autoDeclinePendingAssignments();
+
+  // 2. Jalankan query SELECT jadwal
   try {
-    // 🛠️ DIUBAH MENJADI ASYNC/AWAIT: Menggunakan TIME_FORMAT agar Android Retrofit aman membaca string jam
     const [results] = await db.query(
-      `SELECT id, company_id, created_by, title, description,
-        DATE_FORMAT(start_time, '%Y-%m-%d %H:%i:%s') AS start_time, 
-        DATE_FORMAT(end_time, '%Y-%m-%d %H:%i:%s')   AS end_time,
-        location, created_at
-       FROM schedules`,
+      `SELECT 
+        s.id, 
+        s.company_id, 
+        s.created_by, 
+        s.title, 
+        s.description,
+        DATE_FORMAT(s.start_time, '%Y-%m-%d %H:%i:%s') AS start_time, 
+        DATE_FORMAT(s.end_time, '%Y-%m-%d %H:%i:%s')   AS end_time,
+        s.location, 
+        s.created_at,
+        a.id AS assignment_id,
+        a.status AS assignment_status,
+        DATE_FORMAT(a.assigned_at, '%Y-%m-%d %H:%i:%s') AS assigned_at,
+        u.full_name AS staff_name
+       FROM schedules s
+       LEFT JOIN assignments a ON s.id = a.schedule_id
+       LEFT JOIN users u ON a.user_id = u.id
+       WHERE s.company_id = ?`,
+      [parseInt(company_id)]
     );
 
-    console.log(
-      `[${timestamp}] 🚀 Sukses mengambil ${results.length} data dari database.`,
-    );
-    console.log(`[${timestamp}] 📋 DAFTAR DATA YANG DIKIRIM KE ANDROID / WEB:`);
-
+    console.log(`[${timestamp}] 🚀 Sukses mengambil ${results.length} data jadwal.`);
+    
     if (results.length === 0) {
-      console.log(`[${timestamp}] ⚠️  Tabel kosong, mengirim array kosong [].`);
+      console.log(`[${timestamp}] ⚠️  Jadwal kosong.`);
     } else {
       console.table(results);
     }
@@ -1188,6 +1221,28 @@ app.get("/api/getAttendancesByCompanyId/:company_id", async (req, res) => {
       error: "Gagal menarik data monitoring absensi dari server cloud.",
       details: err.message,
     });
+  }
+});
+
+app.put("/api/assignments/:id/status", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body; // 'accepted' atau 'declined'
+    console.log(`>>> UPDATE STATUS ASSIGNMENT ID #${id} MENJADI: ${status} <<<`);
+    if (!['accepted', 'declined'].includes(status)) {
+      return res.status(400).json({ error: "Status tidak valid. Harus 'accepted' atau 'declined'." });
+    }
+    const [result] = await db.query(
+      "UPDATE assignments SET status = ? WHERE id = ?",
+      [status, parseInt(id)]
+    );
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: "Assignment tidak ditemukan." });
+    }
+    return res.json({ success: true, message: "Status berhasil diperbarui." });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: err.message });
   }
 });
 
@@ -2716,11 +2771,8 @@ app.put("/api/users/:id/password", async (req, res) => {
 });
 
 app.get("/api/getReplacementRequests/:company_id", async (req, res) => {
-
     try {
-
         const { company_id } = req.params;
-
         const [results] = await db.query(`
             SELECT
               r.id,
@@ -2728,50 +2780,32 @@ app.get("/api/getReplacementRequests/:company_id", async (req, res) => {
               r.reason,
               r.status,
               r.created_at,
-
               requester.full_name AS requester_name,
               replacement.full_name AS replacement_name,
-
               s.title,
               s.location,
               DATE_FORMAT(s.start_time,'%Y-%m-%d %H:%i') AS start_time,
               DATE_FORMAT(s.end_time,'%Y-%m-%d %H:%i') AS end_time
-
           FROM replacements r
-
-          JOIN assignments a
-          ON r.assignment_id = a.id
-
-          JOIN schedules s
-          ON a.schedule_id = s.id
-
-          JOIN users requester
-          ON requester.id = r.requested_by
-
-          JOIN users replacement
-          ON replacement.id = r.replacement_user_id
-
+          JOIN assignments a ON r.assignment_id = a.id
+          JOIN schedules s ON a.schedule_id = s.id
+          JOIN users requester ON requester.id = r.requested_by
+          -- 🔴 UBAH DI SINI: Gunakan LEFT JOIN agar data tetap tampil meski replacement_user_id NULL
+          LEFT JOIN users replacement ON replacement.id = r.replacement_user_id
           WHERE s.company_id = ?
-
           ORDER BY r.created_at DESC;
         `,
         [parseInt(company_id)]);
-
+        
         console.log("company_id =", company_id);
-
         return res.json(results);
-
     } catch (err) {
-
         console.log(err);
-
         return res.status(500).json({
             success: false,
             error: err.message
         });
-
     }
-
 });
 
 app.put("/api/replacements/:id/reject", async (req,res)=>{
