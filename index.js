@@ -1770,109 +1770,46 @@ app.get("/api/getWeeklyWorkload/:company_id", async (req, res) => {
 app.post("/api/analyze-leave-request", async (req, res) => {
   try {
     const { reason } = req.body;
-
-    if (!reason) {
-      return res
-        .status(400)
-        .json({ success: false, error: "Teks alasan izin kosong." });
-    }
-
-    console.log(`\n🤖 [REST API] Mengevaluasi dokumen alasan: "${reason}"`);
-
     const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+    
     const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
 
-    const systemInstruction = `
-      Anda adalah HRD senior. Evaluasi alasan izin ini secara objektif.
-      Aturan: Berikan is_valid = 1 jika mendesak (Sakit, Kecelakaan, UGD, Musibah). Berikan is_valid = 0 jika remeh (Kesiangan, malas, urusan pribadi bisa ditunda).
-      WAJIB keluarkan format JSON murni:
-      { "is_valid": 1 atau 0, "ai_reason": "1 kalimat penjelasan Bahasa Indonesia" }
+    const instructionPrompt = `
+      Kamu adalah HRD senior. Analisis alasan izin karyawan berikut apakah masuk akal/valid untuk titip shift/absen atau mencurigakan (ragu).
+      Alasan: "${reason}"
+      
+      Berikan respon dalam format JSON mentah tanpa markdown:
+      {
+        "is_valid": 1 jika valid atau 0 jika ragu,
+        "ai_reason": "penjelasan singkat maksimal 1 kalimat"
+      }
     `;
 
-    const payloadAnalyze = {
-      contents: [
-        {
-          parts: [
-            {
-              text: `Aturan:\n${systemInstruction}\n\nNilailah teks ini: "${reason}"`,
-            },
-          ],
-        },
-      ],
-      generationConfig: {
-        responseMimeType: "application/json",
-      },
-    };
+    const aiResponse = await fetch(GEMINI_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: instructionPrompt }] }],
+        // Tambahkan config JSON jika di v1beta agar output Gemini konsisten berupa JSON object
+        generationConfig: { responseMimeType: "application/json" } 
+      }),
+    });
 
-    let apiResponse;
-    let retries = 3; // Sistem akan otomatis mencoba mengetuk pintu Google hingga 3 kali jika terjadi error 503
-
-    while (retries > 0) {
-      apiResponse = await fetch(GEMINI_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payloadAnalyze),
-      });
-
-      if (apiResponse.status !== 503) {
-        break; // Keluar dari loop jika status bukan 503 (berhasil atau jenis error lain)
-      }
-
-      console.warn(
-        `⚠️ Google API sibuk (503). Mencoba ulang dalam 1.5 detik... (Sisa percobaan: ${retries - 1})`,
-      );
-      retries--;
-      await new Promise((resolve) => setTimeout(resolve, 1500)); // Delay jeda sebelum menembak ulang
-    }
-
-    // JIKA GOOGLE API TERNYATA BENAR-BENAR DOWN (TETAP SIBUK SETELAH 3X RETRY)
-    if (!apiResponse.ok && apiResponse.status === 503) {
-      console.log(
-        "fallback 💡 Mengaktifkan sistem penyaringan cadangan internal (HRD Local Engine)...",
-      );
-
-      // Deteksi kata kunci darurat secara manual menggunakan Regex Local Server
-      const kataKunciDarurat =
-        /kecelakaan|sakit|ugd|rs|rumah sakit|dokter|musibah|meninggal|kejang/i;
-      const isValidLocal = kataKunciDarurat.test(reason) ? 1 : 0;
-      const reasonLocal =
-        isValidLocal === 1
-          ? "Validasi Cadangan: Alasan terdeteksi mengandung unsur kedaruratan medis/force majeure (Disetujui HRD Engine)."
-          : "Validasi Cadangan: Alasan terdeteksi minim indikasi kedaruratan medis mendesak (Ditinjau Ulang).";
-
-      return res.json({
-        success: true,
-        is_valid: isValidLocal,
-        ai_reason: reasonLocal,
-      });
-    }
-
-    // JIKA GOOGLE API MERESPONS DENGAN SUKSES (200 OK)
-    if (apiResponse.ok) {
-      const aiDataParsed = await apiResponse.json();
-      const rawJsonText =
-        aiDataParsed.candidates[0].content.parts[0].text.trim();
-      const aiResult = JSON.parse(rawJsonText);
-
-      console.log("🧠 Hasil Analisis Sukses Berbasis REST:", aiResult);
-      return res.json({
-        success: true,
-        is_valid: aiResult.is_valid,
-        ai_reason: aiResult.ai_reason,
+    if (aiResponse.ok) {
+      const aiDataParsed = await aiResponse.json();
+      const geminiResult = JSON.parse(aiDataParsed.candidates[0].content.parts[0].text.trim());
+      
+      // 🌟 KUNCI PERBAIKAN: Kirim success: true dan sebar data dari gemini
+      return res.json({ 
+        success: true, 
+        is_valid: geminiResult.is_valid, 
+        ai_reason: geminiResult.ai_reason 
       });
     } else {
-      const errorText = await apiResponse.text();
-      throw new Error(
-        `Google API merespon dengan status ${apiResponse.status}: ${errorText}`,
-      );
+      return res.json({ success: false, message: "Gemini API Error" });
     }
   } catch (err) {
-    console.error("❌ BACKEND ANALYSIS ERROR:", err.message);
-    return res.status(500).json({
-      success: false,
-      error: "Gagal memproses analisis AI.",
-      details: err.message,
-    });
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
 
