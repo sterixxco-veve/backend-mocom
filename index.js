@@ -1771,7 +1771,6 @@ app.post("/api/analyze-leave-request", async (req, res) => {
   try {
     const { reason } = req.body;
     const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-    
     const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
 
     const instructionPrompt = `
@@ -1790,7 +1789,6 @@ app.post("/api/analyze-leave-request", async (req, res) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         contents: [{ parts: [{ text: instructionPrompt }] }],
-        // Tambahkan config JSON jika di v1beta agar output Gemini konsisten berupa JSON object
         generationConfig: { responseMimeType: "application/json" } 
       }),
     });
@@ -1799,17 +1797,16 @@ app.post("/api/analyze-leave-request", async (req, res) => {
       const aiDataParsed = await aiResponse.json();
       const geminiResult = JSON.parse(aiDataParsed.candidates[0].content.parts[0].text.trim());
       
-      // 🌟 KUNCI PERBAIKAN: Kirim success: true dan sebar data dari gemini
+      // Mengembalikan response terstruktur langsung ke frontend Laravel
       return res.json({ 
-        success: true, 
         is_valid: geminiResult.is_valid, 
         ai_reason: geminiResult.ai_reason 
       });
     } else {
-      return res.json({ success: false, message: "Gemini API Error" });
+      return res.status(500).json({ error: "Gemini API bermasalah" });
     }
   } catch (err) {
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ error: err.message });
   }
 });
 
