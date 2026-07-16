@@ -184,7 +184,7 @@ app.get("/api/getCompanyDetail/:id", async (req, res) => {
 app.get("/api/getAllCompanies", async (req, res) => {
   try {
     const [results] = await db.query(
-      "SELECT id, company_name, email, phone_number, address FROM companies",
+      "SELECT id, company_name, email, phone_number, address, is_active FROM companies",
     );
     return res.json(results);
   } catch (err) {
